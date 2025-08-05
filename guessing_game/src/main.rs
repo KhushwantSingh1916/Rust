@@ -1,27 +1,69 @@
-use std::io;  // Importing the io module for input/output operations
-use rand::Rng; // Importing the Rng trait for generating random numbers
-use std::cmp::Ordering; // Importing the Ordering enum for comparing values
+use eframe::egui;
+use rand::Rng;
+use std::cmp::Ordering;
 
-fn main() {
-    println!("Guess the number!");
-    let number = rand::thread_rng().gen_range(1..=100); // Generate a random number between 1 and 100
-    println!("The Secret number is: {number}");
-    loop{ // Infinite loop to keep the game running
-        println!("Please input your guess.");
-        let mut guess = String::new(); // Create a mutable String to store the user's guess
+struct GuessingGame {
+    secret_number: u32,
+    guess: String,
+    message: String,
+    color: egui::Color32,
+}
 
-        io::stdin() // Read input from the standard input
-            .read_line(&mut guess) // Read a line from the standard input and store it in the guess variable
-            .expect("Failed to read line"); // Expect the read operation to be successful
-        let guess: u32 = guess.trim().parse().expect("Please input valid number"); // Parse the guess as a u32 and expect it to be successful
-
-        println!("You guessed: {guess}");
-        match guess.cmp(&number){ // Compare the user's guess with the secret number
-            Ordering::Less => println!("Too Small!"), 
-            Ordering::Greater => println!("Too Big!"),
-            Ordering::Equal => {println!("You win!");
-                                break;
-            }  
+impl Default for GuessingGame {
+    fn default() -> Self {
+        Self {
+            secret_number: rand::thread_rng().gen_range(1..=100),
+            guess: String::new(),
+            message: String::from("Guess a number between 1 and 100"),
+            color: egui::Color32::WHITE,
         }
     }
+}
+
+impl eframe::App for GuessingGame {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("🎯 Guess the Number!");
+            ui.label(egui::RichText::new(&self.message).color(self.color));
+
+            ui.horizontal(|ui| {
+                ui.label("Your Guess:");
+                ui.text_edit_singleline(&mut self.guess);
+            });
+
+            if ui.button("Submit").clicked() {
+                if let Ok(num) = self.guess.trim().parse::<u32>() {
+                    match num.cmp(&self.secret_number) {
+                        Ordering::Less => {
+                            self.message = "Too Small!".to_string();
+                            self.color = egui::Color32::RED;
+                        }
+                        Ordering::Greater => {
+                            self.message = "Too Big!".to_string();
+                            self.color = egui::Color32::RED;
+                        }
+                        Ordering::Equal => {
+                            self.message = "🎉 You Win! Starting a new game...".to_string();
+                            self.color = egui::Color32::GREEN;
+                            self.secret_number = rand::thread_rng().gen_range(1..=100);
+                            self.guess.clear();
+                        }
+                    }
+                } else {
+                    self.message = "❌ Please enter a valid number".to_string();
+                    self.color = egui::Color32::YELLOW;
+                }
+            }
+        });
+    }
+}
+
+fn main() {
+    let options = eframe::NativeOptions::default();
+    eframe::run_native(
+        "Guessing Game",
+        options,
+        Box::new(|_cc| Ok(Box::new(GuessingGame::default()))),
+    )
+    .expect("Failed to start app");
 }
