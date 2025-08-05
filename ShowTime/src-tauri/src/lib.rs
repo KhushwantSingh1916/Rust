@@ -38,15 +38,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![greet])
         .setup(|app| {
-            // Remove the menu bar
             let _ = app.remove_menu();
-
-            // Block screen recording on Windows/macOS
             if let Some(window) = app.get_webview_window("main") {
                 block_capture(&window);
             }
-
-            // Disable right-click menu in the webview
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.eval(
                     r#"document.addEventListener('contextmenu', e => e.preventDefault());"#,
