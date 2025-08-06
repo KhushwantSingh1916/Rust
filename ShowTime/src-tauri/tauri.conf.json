@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.khush.showtime",
   "build": {
-    "frontendDist": "."
+    "frontendDist": null,
+    "devUrl": "https://www.gajanan.click/"
   },
   "app": {
     "withGlobalTauri": true,
