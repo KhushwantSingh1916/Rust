@@ -48,7 +48,10 @@ fn block_capture(window: &tauri::WebviewWindow) {
 
     if let Ok(hwnd) = window.hwnd() {
         unsafe {
-            let _ = SetWindowDisplayAffinity(HWND(hwnd.0 as *mut core::ffi::c_void), WDA_MONITOR);
+            let _ = SetWindowDisplayAffinity(
+                HWND(hwnd.0 as *mut core::ffi::c_void),
+                WDA_MONITOR,
+            );
         }
     }
 }
@@ -70,30 +73,27 @@ fn block_capture(window: &tauri::WebviewWindow) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // ✅ Detect VM before Tauri initializes and exit immediately
+    if is_virtual_machine() {
+        // Optional: print to log before exiting
+        eprintln!("Blocked: Running inside a virtual machine is not allowed.");
+        std::process::exit(0);
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![greet])
         .setup(|app| {
-            //screen recording blocked
             let _ = app.remove_menu();
+
             if let Some(window) = app.get_webview_window("main") {
+                // Disable screen capture
                 block_capture(&window);
-            }
-            //menu blocked
-            if let Some(window) = app.get_webview_window("main") {
+
+                // Disable right click context menu
                 let _ = window.eval(
                     r#"document.addEventListener('contextmenu', e => e.preventDefault());"#,
                 );
-            }
-            //virtual OS blocked
-            if is_virtual_machine() {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.eval(
-                        r#"document.body.style.backgroundColor = "black"; 
-                           document.body.innerHTML = "<h1 style='color:white;text-align:center;margin-top:40vh;'>This app cannot run in a virtual machine.</h1>";"#,
-                    );
-                }
-                return Ok(());
             }
 
             Ok(())
