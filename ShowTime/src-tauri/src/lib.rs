@@ -1,4 +1,137 @@
 use tauri::Manager;
+use std::process::{Command, Stdio};
+use std::thread;
+use winit::event_loop::EventLoopBuilder;
+use winit::platform::windows::EventLoopBuilderExtWindows;
+
+#[cfg(target_os = "windows")]
+fn blackout_screen() {
+    use winit::{
+        dpi::LogicalSize,
+        event::{Event, WindowEvent},
+        event_loop::{ControlFlow, EventLoop},
+        window::{Fullscreen, WindowBuilder},
+    };
+
+    std::thread::spawn(|| {
+        let event_loop = EventLoop::new();
+        let window = WindowBuilder::new()
+            .with_title("Blackout")
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_fullscreen(Some(Fullscreen::Borderless(None)))
+            .build(&event_loop)
+            .unwrap();
+
+        window.set_cursor_visible(false);
+
+        event_loop.run(move |event, _, control_flow| {
+            *control_flow = ControlFlow::Wait;
+            if let Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            } = event
+            {
+                *control_flow = ControlFlow::Exit;
+            }
+        });
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn blackout_screen() {
+    // For macOS, similar concept, but use Cocoa to overlay a black NSWindow
+    use cocoa::appkit::{NSApp, NSColor, NSWindow, NSBackingStoreBuffered};
+    use cocoa::base::{id, nil};
+    use cocoa::foundation::{NSAutoreleasePool, NSRect, NSSize, NSUInteger};
+
+    std::thread::spawn(|| unsafe {
+        let _pool = NSAutoreleasePool::new(nil);
+        let app = NSApp();
+        let screen_frame = NSScreen::mainScreen(nil).frame();
+        let window: id = NSWindow::alloc(nil)
+            .initWithContentRect_styleMask_backing_defer_(
+                screen_frame,
+                1 << 14, // borderless window
+                NSBackingStoreBuffered,
+                false,
+            )
+            .autorelease();
+        window.setBackgroundColor_(NSColor::blackColor(nil));
+        window.makeKeyAndOrderFront_(nil);
+        app.run();
+    });
+}
+
+fn start_detector() {
+    thread::spawn(|| {
+        let mut child = Command::new("python")
+            .arg("detector/detector.py") // path to YOLO script
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("Failed to start Python detector");
+
+        if let Some(stdout) = child.stdout.take() {
+            use std::io::{BufRead, BufReader};
+            let reader = BufReader::new(stdout);
+
+            // Track if blackout window is already active
+            let mut blackout_triggered = false;
+
+            for line in reader.lines() {
+                if let Ok(l) = line {
+                    let lower = l.to_lowercase();
+
+                    if (lower.contains("phone detected") || lower.contains("camera detected"))
+                        && !blackout_triggered
+                    {
+                        println!("🔴 {} - Triggering blackout...", l.trim());
+                        blackout_triggered = true;
+
+                        // Run blackout on same thread instead of creating multiple event loops
+                        #[cfg(target_os = "windows")]
+                        {
+                            use winit::{
+                                event::{Event, WindowEvent},
+                                event_loop::{ControlFlow, EventLoop},
+                                window::{Fullscreen, WindowBuilder},
+                            };
+
+                            let event_loop = EventLoopBuilder::new().with_any_thread(true).build();
+                            let window = WindowBuilder::new()
+                                .with_title("Blackout")
+                                .with_decorations(false)
+                                .with_resizable(false)
+                                .with_fullscreen(Some(Fullscreen::Borderless(None)))
+                                .build(&event_loop)
+                                .unwrap();
+
+                            window.set_cursor_visible(false);
+                            event_loop.run(move |event, _, control_flow| {
+                                *control_flow = ControlFlow::Wait;
+                                if let Event::WindowEvent {
+                                    event: WindowEvent::CloseRequested,
+                                    ..
+                                } = event
+                                {
+                                    *control_flow = ControlFlow::Exit;
+                                }
+                            });
+                        }
+
+                        #[cfg(target_os = "macos")]
+                        blackout_screen();
+                    }
+                }
+            }
+        }
+
+        let _ = child.wait();
+    });
+}
+
+
 
 #[cfg(target_os = "windows")]
 fn is_virtual_machine() -> bool {
@@ -85,6 +218,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![greet])
         .setup(|app| {
             let _ = app.remove_menu();
+            start_detector();
 
             if let Some(window) = app.get_webview_window("main") {
                 // Disable screen capture
