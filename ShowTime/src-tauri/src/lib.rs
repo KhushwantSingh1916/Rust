@@ -1,72 +1,12 @@
 use tauri::Manager;
 use std::process::{Command, Stdio};
 use std::thread;
-use winit::event_loop::EventLoopBuilder;
-use winit::platform::windows::EventLoopBuilderExtWindows;
+use std::sync::{Arc, Mutex};
 
-#[cfg(target_os = "windows")]
-fn blackout_screen() {
-    use winit::{
-        dpi::LogicalSize,
-        event::{Event, WindowEvent},
-        event_loop::{ControlFlow, EventLoop},
-        window::{Fullscreen, WindowBuilder},
-    };
-
-    std::thread::spawn(|| {
-        let event_loop = EventLoop::new();
-        let window = WindowBuilder::new()
-            .with_title("Blackout")
-            .with_decorations(false)
-            .with_resizable(false)
-            .with_fullscreen(Some(Fullscreen::Borderless(None)))
-            .build(&event_loop)
-            .unwrap();
-
-        window.set_cursor_visible(false);
-
-        event_loop.run(move |event, _, control_flow| {
-            *control_flow = ControlFlow::Wait;
-            if let Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                ..
-            } = event
-            {
-                *control_flow = ControlFlow::Exit;
-            }
-        });
-    });
-}
-
-#[cfg(target_os = "macos")]
-fn blackout_screen() {
-    // For macOS, similar concept, but use Cocoa to overlay a black NSWindow
-    use cocoa::appkit::{NSApp, NSColor, NSWindow, NSBackingStoreBuffered};
-    use cocoa::base::{id, nil};
-    use cocoa::foundation::{NSAutoreleasePool, NSRect, NSSize, NSUInteger};
-
-    std::thread::spawn(|| unsafe {
-        let _pool = NSAutoreleasePool::new(nil);
-        let app = NSApp();
-        let screen_frame = NSScreen::mainScreen(nil).frame();
-        let window: id = NSWindow::alloc(nil)
-            .initWithContentRect_styleMask_backing_defer_(
-                screen_frame,
-                1 << 14, // borderless window
-                NSBackingStoreBuffered,
-                false,
-            )
-            .autorelease();
-        window.setBackgroundColor_(NSColor::blackColor(nil));
-        window.makeKeyAndOrderFront_(nil);
-        app.run();
-    });
-}
-
-fn start_detector() {
-    thread::spawn(|| {
+fn start_detector(app_handle: tauri::AppHandle) {
+    thread::spawn(move || {
         let mut child = Command::new("python")
-            .arg("detector/detector.py") // path to YOLO script
+            .arg("detector/detector.py") 
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
@@ -75,8 +15,6 @@ fn start_detector() {
         if let Some(stdout) = child.stdout.take() {
             use std::io::{BufRead, BufReader};
             let reader = BufReader::new(stdout);
-
-            // Track if blackout window is already active
             let mut blackout_triggered = false;
 
             for line in reader.lines() {
@@ -89,39 +27,32 @@ fn start_detector() {
                         println!("🔴 {} - Triggering blackout...", l.trim());
                         blackout_triggered = true;
 
-                        // Run blackout on same thread instead of creating multiple event loops
-                        #[cfg(target_os = "windows")]
-                        {
-                            use winit::{
-                                event::{Event, WindowEvent},
-                                event_loop::{ControlFlow, EventLoop},
-                                window::{Fullscreen, WindowBuilder},
-                            };
+                        // Block the main Tauri window instead of creating a new one
+                        if let Some(window) = app_handle.get_webview_window("main") {
+                            // Method 1: Hide the window content by injecting CSS
+                            let _ = window.eval(
+                                r#"
+                                document.body.style.background = 'black';
+                                document.body.innerHTML = '<div style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: black; z-index: 999999;"></div>';
+                                "#,
+                            );
 
-                            let event_loop = EventLoopBuilder::new().with_any_thread(true).build();
-                            let window = WindowBuilder::new()
-                                .with_title("Blackout")
-                                .with_decorations(false)
-                                .with_resizable(false)
-                                .with_fullscreen(Some(Fullscreen::Borderless(None)))
-                                .build(&event_loop)
-                                .unwrap();
-
-                            window.set_cursor_visible(false);
-                            event_loop.run(move |event, _, control_flow| {
-                                *control_flow = ControlFlow::Wait;
-                                if let Event::WindowEvent {
-                                    event: WindowEvent::CloseRequested,
-                                    ..
-                                } = event
-                                {
-                                    *control_flow = ControlFlow::Exit;
-                                }
-                            });
+                            // Method 2: Additionally hide the window itself (optional)
+                            // let _ = window.hide();
                         }
-
-                        #[cfg(target_os = "macos")]
-                        blackout_screen();
+                    } else if lower.contains("no phone detected") || lower.contains("no camera detected") {
+                        // Re-enable the window when threat is gone
+                        if blackout_triggered {
+                            println!("✅ {} - Restoring window...", l.trim());
+                            blackout_triggered = false;
+                            
+                            if let Some(window) = app_handle.get_webview_window("main") {
+                                // Reload the window to restore original content
+                                let _ = window.eval("window.location.reload()");
+                                // Or show the window again if it was hidden
+                                // let _ = window.show();
+                            }
+                        }
                     }
                 }
             }
@@ -130,8 +61,6 @@ fn start_detector() {
         let _ = child.wait();
     });
 }
-
-
 
 #[cfg(target_os = "windows")]
 fn is_virtual_machine() -> bool {
@@ -204,27 +133,45 @@ fn block_capture(window: &tauri::WebviewWindow) {
     }
 }
 
+// Alternative approach: Create a Tauri command that can be called from the detector
+#[tauri::command]
+fn trigger_blackout(app_handle: tauri::AppHandle) {
+    if let Some(window) = app_handle.get_webview_window("main") {
+        let _ = window.eval(
+            r#"
+            document.body.style.background = 'black';
+            document.body.innerHTML = '<div style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: black; z-index: 999999; display: flex; align-items: center; justify-content: center; color: white; font-size: 24px;">ACCESS BLOCKED</div>';
+            "#,
+        );
+    }
+}
+
+#[tauri::command]
+fn restore_window(app_handle: tauri::AppHandle) {
+    if let Some(window) = app_handle.get_webview_window("main") {
+        let _ = window.eval("window.location.reload()");
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // ✅ Detect VM before Tauri initializes and exit immediately
     if is_virtual_machine() {
-        // Optional: print to log before exiting
         eprintln!("Blocked: Running inside a virtual machine is not allowed.");
         std::process::exit(0);
     }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![greet, trigger_blackout, restore_window])
         .setup(|app| {
             let _ = app.remove_menu();
-            start_detector();
+            
+            // Pass the app handle to the detector
+            start_detector(app.handle().clone());
 
             if let Some(window) = app.get_webview_window("main") {
-                // Disable screen capture
                 block_capture(&window);
-
-                // Disable right click context menu
+                
                 let _ = window.eval(
                     r#"document.addEventListener('contextmenu', e => e.preventDefault());"#,
                 );
